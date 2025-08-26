@@ -30,7 +30,21 @@ pub struct PublishWarnings {
     pub other: Vec<String>,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Default, Debug, serde::Serialize)]
+pub struct PublishedCrate {
+    pub name: String,
+    pub vers: String,
+    pub deps: Vec<CrateDep>,
+    pub cksum: String,
+    pub features: HashMap<String, Vec<String>>,
+    pub yanked: bool,
+    pub links: Option<String>,
+    pub v: u8,
+    pub features2: HashMap<String, Vec<String>>,
+    pub rust_version: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CrateDepKind {
     Dev,
@@ -38,7 +52,7 @@ pub enum CrateDepKind {
     Normal,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct CrateDep {
     pub name: String,
     pub version_req: String,
@@ -52,16 +66,11 @@ pub struct CrateDep {
 }
 
 #[derive(Default, Debug, serde::Serialize, serde::Deserialize)]
-pub struct CrateMetaFeatures {
-    pub extras: Vec<String>,
-}
-
-#[derive(Default, Debug, serde::Serialize, serde::Deserialize)]
 pub struct CrateMeta {
     pub name: String,
     pub vers: String,
     pub deps: Vec<CrateDep>,
-    pub features: CrateMetaFeatures,
+    pub features: HashMap<String, Vec<String>>,
     pub authors: Vec<String>,
     pub description: Option<String>,
     pub documentation: Option<String>,
@@ -75,4 +84,18 @@ pub struct CrateMeta {
     pub badges: HashMap<String, HashMap<String, String>>,
     pub links: Option<String>,
     pub rust_version: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deserialize_minimal_crate_meta() {
+        let s = r#"
+{"name":"dummy","vers":"0.1.0","deps":[],"features":{},"authors":[],"description":null,"documentation":null,"homepage":null,"readme":null,"readme_file":null,"keywords":[],"categories":[],"license":null,"license_file":null,"repository":null,"badges":{},"links":null,"rust_version":null}
+"#;
+
+        serde_json::from_str::<CrateMeta>(s).expect("deserializing minial CrateMeta");
+    }
 }
