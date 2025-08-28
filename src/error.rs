@@ -33,3 +33,23 @@ impl IntoResponse for Error {
         (status_code, Json(ErrorResponse { description })).into_response()
     }
 }
+
+pub trait Optional<T, E>
+where
+    Self: Sized,
+{
+    fn optional(self) -> std::result::Result<Option<T>, E>;
+}
+
+impl<T> Optional<T, Error> for Result<T, Error> {
+    fn optional(self) -> std::result::Result<Option<T>, Error> {
+        match self {
+            Ok(v) => Ok(Some(v)),
+            Err(Error::S3(S3Error::Get {
+                status: Some(404), ..
+            })) => Ok(None),
+
+            Err(err) => Err(err),
+        }
+    }
+}

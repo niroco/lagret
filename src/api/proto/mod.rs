@@ -30,7 +30,7 @@ pub struct PublishWarnings {
     pub other: Vec<String>,
 }
 
-#[derive(Clone, Default, Debug, serde::Serialize)]
+#[derive(Clone, Default, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PublishedCrate {
     pub name: String,
     pub vers: String,

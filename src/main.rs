@@ -13,13 +13,15 @@ mod store;
 use error::Error;
 use store::Store;
 
-use crate::s3::S3Storage;
+use crate::{error::Optional, s3::S3Storage};
 
 type Result<T> = std::result::Result<T, Error>;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let s3_storage = S3Storage::from_env().await;
+
+    s3_storage.load_latest_index().await?;
 
     if let Some((key, content)) = std::env::args().nth(1).zip(std::env::args().nth(2)) {
         println!("putting {key} => {content}");
@@ -73,7 +75,18 @@ async fn crates_publish(
     let json_len = bs.get_u32_le() as usize;
     let json_data = bs.split_to(json_len);
 
-    let meta = serde_json::from_slice::<api::CrateMeta>(&json_data).expect("getting meta");
+    let meta = match serde_json::from_slice::<api::CrateMeta>(&json_data) {
+        Ok(meta) => meta,
+
+        Err(err) => {
+            eprintln!("deserializing CrateMeta: {err}");
+            eprintln!(
+                "raw: {}",
+                str::from_utf8(&json_data).expect("json must be utf8")
+            );
+            panic!("shit");
+        }
+    };
 
     println!("read meta: {meta:#?}");
 

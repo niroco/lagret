@@ -1,12 +1,19 @@
 use std::sync::Arc;
 
-use crate::api;
-use aws_sdk_s3::{Client, config::Credentials, primitives::ByteStream};
-use bytes::Bytes;
+use crate::{
+    api::{self, PublishedCrate},
+    error::Optional,
+};
+use aws_sdk_s3::{
+    Client, config::Credentials, operation::put_object::builders::PutObjectFluentBuilder,
+    primitives::ByteStream,
+};
+use bytes::{Bytes, BytesMut};
 
 mod error;
 
 pub use error::S3Error;
+use tokio::sync::RwLock;
 
 pub type S3Result<T> = std::result::Result<T, S3Error>;
 
@@ -14,6 +21,8 @@ pub type S3Result<T> = std::result::Result<T, S3Error>;
 pub struct S3Storage {
     c: Client,
     bucket_name: Arc<String>,
+
+    index: Arc<RwLock<Vec<PublishedCrate>>>,
 }
 
 impl S3Storage {
@@ -40,14 +49,51 @@ impl S3Storage {
 
         let c = Client::new(&config);
 
-        Self { c, bucket_name }
+        Self {
+            c,
+            bucket_name,
+            index: Default::default(),
+        }
     }
 
-    pub async fn put_text_object(&self, key: String, content: String) -> S3Result<()> {
+    fn put(&self, key: impl Into<String>) -> PutObjectFluentBuilder {
         self.c
             .put_object()
             .bucket(self.bucket_name.as_str())
             .key(key)
+    }
+
+    pub async fn load_latest_index(&self) -> S3Result<()> {
+        let mut write_lock = self.index.write().await;
+        let index = self.get_index().await.optional()?;
+
+        *write_lock = index.unwrap_or_default();
+
+        Ok(())
+    }
+
+    pub async fn get_index(&self) -> S3Result<Vec<PublishedCrate>> {
+        let mut res = self
+            .c
+            .get_object()
+            .bucket(self.bucket_name.as_str())
+            .key("index.json")
+            .send()
+            .await?;
+
+        let mut buf = BytesMut::new();
+
+        while let Ok(bs) = res.body.next().await.expect("getting bs") {
+            buf.extend(bs);
+        }
+
+        let res = serde_json::from_slice(&buf).expect("deser");
+
+        Ok(res)
+    }
+
+    pub async fn put_text_object(&self, key: String, content: String) -> S3Result<()> {
+        self.put(key)
             .body(ByteStream::from(content.into_bytes()))
             .send()
             .await?;
@@ -57,13 +103,7 @@ impl S3Storage {
 
     pub async fn store_crate(&self, meta: &api::CrateMeta, data: Bytes) -> S3Result<()> {
         let key = format!("crates/{}/{}", meta.name, meta.vers);
-        self.c
-            .put_object()
-            .bucket(self.bucket_name.as_str())
-            .key(key)
-            .body(ByteStream::from(data))
-            .send()
-            .await?;
+        self.put(key).body(ByteStream::from(data)).send().await?;
 
         Ok(())
     }
