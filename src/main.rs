@@ -7,15 +7,28 @@ use bytes::{Buf, Bytes};
 
 mod api;
 mod error;
+mod s3;
 mod store;
 
 use error::Error;
 use store::Store;
 
+use crate::s3::S3Storage;
+
 type Result<T> = std::result::Result<T, Error>;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
+    let s3_storage = S3Storage::from_env().await;
+
+    if let Some((key, content)) = std::env::args().nth(1).zip(std::env::args().nth(2)) {
+        println!("putting {key} => {content}");
+
+        s3_storage.put_text_object(key, content).await?;
+
+        return Ok(());
+    }
+
     // build our application with a single route
     let app = Router::new()
         .route("/config.json", routing::get(config))
@@ -23,11 +36,14 @@ async fn main() {
         .route("/api/v1/crates/new", routing::put(crates_publish))
         .route("/api/v1/crates", routing::get(crates_search))
         .layer(Extension(Store::default()))
+        .layer(Extension(s3_storage))
         .fallback(fallback);
 
     // run our app with hyper, listening globally on port 3000
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
+    axum::serve(listener, app).await?;
+
+    Ok(())
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -49,7 +65,7 @@ async fn crates_get(
 
 async fn crates_publish(
     headers: HeaderMap,
-    extract::Extension(store): extract::Extension<Store>,
+    extract::Extension(store): extract::Extension<S3Storage>,
     mut bs: Bytes,
 ) -> Result<Json<api::PublishResult>> {
     println!("Publish: {headers:#?}");
@@ -74,7 +90,7 @@ async fn crates_publish(
         "the total size of the data"
     );
 
-    store.store_published_crate(meta, data).await?;
+    store.store_crate(&meta, data).await?;
 
     Ok(Json(api::PublishResult::default()))
 }
