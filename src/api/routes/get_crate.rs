@@ -19,8 +19,6 @@ pub async fn get_crate(
     extract::Path(args): extract::Path<Args>,
     extract::Extension(IndexState(mtx)): extract::Extension<IndexState>,
 ) -> Result<(HeaderMap, NdJson<api::PublishedCrate>)> {
-    println!("Got Crates get: {args:#?}",);
-
     let read_index = mtx.read().await;
 
     let Some(versions_iter) = read_index.get_crate(&args.name) else {

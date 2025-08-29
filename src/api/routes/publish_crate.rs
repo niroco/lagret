@@ -39,14 +39,8 @@ pub async fn publish_crate(
         }
     }
 
-    println!("read meta: {meta:#?}");
-
     let data_len = bs.get_u32_le() as usize;
-    println!("pacakge_len: {data_len}");
-
     let data = bs.split_to(data_len);
-
-    println!("read {}bs of .crate", data.len());
 
     assert_eq!(
         total_len,
