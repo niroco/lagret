@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use semver::{Version, VersionReq};
+pub use semver::{Version, VersionReq};
 
 pub type Features = HashMap<String, Vec<String>>;
 
@@ -19,7 +19,7 @@ pub struct SearchResult {
 
 #[derive(Debug, serde::Serialize)]
 pub struct SearchMeta {
-    pub total: u64,
+    pub total: usize,
 }
 
 #[derive(Default, Debug, serde::Serialize)]

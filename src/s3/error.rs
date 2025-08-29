@@ -7,26 +7,17 @@ use aws_sdk_s3::{
 
 #[derive(Debug, thiserror::Error)]
 pub enum S3Error {
-    #[error("PUT {status:03?}: {message}")]
-    Put {
-        status: Option<u16>,
-        message: String,
-    },
-
-    #[error("GET {status:03?}: {message}")]
-    Get {
-        status: Option<u16>,
-        message: String,
-    },
-
-    #[error("LIST {status:03?}: {message}")]
-    List {
+    #[error("Non2xx reply: {status:?}: {message}")]
+    Non2xx {
         status: Option<u16>,
         message: String,
     },
 
     #[error("splitting key `{key}`: {message}")]
     KeySplit { key: String, message: String },
+
+    #[error("Streaming data error: {0}")]
+    StreamError(String),
 }
 
 impl S3Error {
@@ -42,12 +33,18 @@ impl<T> crate::error::Optional<T, S3Error> for Result<T, S3Error> {
     fn optional(self) -> Result<Option<T>, S3Error> {
         match self {
             Ok(v) => Ok(Some(v)),
-            Err(S3Error::Get {
+            Err(S3Error::Non2xx {
                 status: Some(404), ..
             }) => Ok(None),
 
             Err(err) => Err(err),
         }
+    }
+}
+
+impl From<aws_sdk_s3::primitives::ByteStreamError> for S3Error {
+    fn from(err: aws_sdk_s3::primitives::ByteStreamError) -> Self {
+        Self::StreamError(err.to_string())
     }
 }
 
@@ -63,7 +60,7 @@ impl From<SdkError<PutObjectError>> for S3Error {
 
         println!("message: {message}",);
 
-        Self::Put {
+        Self::Non2xx {
             status: err.raw_response().map(|r| r.status().as_u16()),
             message,
         }
@@ -82,7 +79,7 @@ impl From<SdkError<ListObjectsV2Error>> for S3Error {
 
         println!("message: {message}",);
 
-        Self::Put {
+        Self::Non2xx {
             status: err.raw_response().map(|r| r.status().as_u16()),
             message,
         }
@@ -101,7 +98,7 @@ impl From<SdkError<GetObjectError>> for S3Error {
 
         println!("message: {message}",);
 
-        Self::Put {
+        Self::Non2xx {
             status: err.raw_response().map(|r| r.status().as_u16()),
             message,
         }

@@ -3,9 +3,14 @@ use std::sync::Arc;
 use crate::{
     api::{self, CrateMeta},
     index::IndexEntry,
+    store::CrateFile,
 };
 use aws_sdk_s3::{
-    Client, config::Credentials, operation::put_object::builders::PutObjectFluentBuilder,
+    Client,
+    config::Credentials,
+    operation::{
+        get_object::builders::GetObjectFluentBuilder, put_object::builders::PutObjectFluentBuilder,
+    },
     primitives::ByteStream,
 };
 use bytes::Bytes;
@@ -13,6 +18,7 @@ use bytes::Bytes;
 mod error;
 
 pub use error::S3Error;
+use semver::Version;
 
 pub type S3Result<T> = std::result::Result<T, S3Error>;
 
@@ -65,6 +71,21 @@ impl S3Storage {
             .key(key)
     }
 
+    fn get(&self, key: impl Into<String>) -> GetObjectFluentBuilder {
+        self.c
+            .get_object()
+            .bucket(self.bucket_name.as_str())
+            .key(key)
+    }
+
+    fn crate_path(&self, crate_name: &str, version: &Version) -> String {
+        format!("{CRATES_BUCKET_DIR}/{crate_name}/{version}/{crate_name}-{version}.crate")
+    }
+
+    fn crate_meta_path(&self, crate_name: &str, version: &Version) -> String {
+        format!("crates/{crate_name}/{version}/{crate_name}-{version}.json")
+    }
+
     pub async fn load_index(&self) -> S3Result<crate::Index> {
         let mut objects_paginator = self
             .c
@@ -92,9 +113,11 @@ impl S3Storage {
                     .next()
                     .ok_or_else(|| S3Error::key_split(key, "finding crate name"))?;
 
-                let crate_version = split
+                let version = split
                     .next()
-                    .ok_or_else(|| S3Error::key_split(key, "finding crate version"))?;
+                    .ok_or_else(|| S3Error::key_split(key, "finding crate version"))?
+                    .parse::<Version>()
+                    .map_err(|_| S3Error::key_split(key, "invalid version"))?;
 
                 let filename = split
                     .next()
@@ -105,21 +128,8 @@ impl S3Storage {
                     continue;
                 }
 
-                let meta_key = format!(
-                    "{CRATES_BUCKET_DIR}/{crate_name}/{crate_version}/{crate_name}-{crate_version}.json"
-                );
-
-                //let crate_key = format!(
-                //    "{CRATES_BUCKET_DIR}/{crate_name}/{crate_version}/{crate_name}-{crate_version}.crate"
-                //);
-
-                let fetched_meta = self
-                    .c
-                    .get_object()
-                    .bucket(self.bucket_name.as_str())
-                    .key(meta_key)
-                    .send()
-                    .await?;
+                let meta_key = self.crate_meta_path(crate_name, &version);
+                let fetched_meta = self.get(meta_key).send().await?;
 
                 let bs = fetched_meta.body.collect().await.expect("collecting body");
                 let S3CrateMeta {
@@ -139,6 +149,23 @@ impl S3Storage {
         }
 
         Ok(index)
+    }
+
+    pub async fn download(
+        &self,
+        crate_name: impl AsRef<str>,
+        version: &Version,
+    ) -> S3Result<crate::CrateFile> {
+        let key = self.crate_path(crate_name.as_ref(), version);
+        let res = self.get(key).send().await?;
+
+        let size = res.content_length().expect("missing content len") as usize;
+        let data = res.body.collect().await?;
+
+        Ok(CrateFile {
+            size,
+            data: data.into_bytes(),
+        })
     }
 
     pub async fn list_objects(&self) -> S3Result<()> {
@@ -172,9 +199,12 @@ impl S3Storage {
     }
 
     pub async fn store_crate(&self, meta: api::CrateMeta, data: Bytes) -> S3Result<IndexEntry> {
-        let base = format!("crates/{}/{}", meta.name, meta.vers);
-        let crate_key = format!("{}/{}-{}.crate", base, meta.name, meta.vers);
-        let meta_key = format!("{}/{}-{}.json", base, meta.name, meta.vers);
+        let crate_name = &meta.name;
+        let crate_version = &meta.vers;
+
+        let crate_key = self.crate_path(&meta.name, crate_version);
+        let meta_key =
+            format!("crates/{crate_name}/{crate_version}/{crate_name}-{crate_version}.json");
 
         let cksum = sha256::digest(data.as_ref());
 
