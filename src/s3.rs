@@ -1,19 +1,15 @@
 use std::sync::Arc;
 
-use crate::{
-    api::{self, PublishedCrate},
-    error::Optional,
-};
+use crate::api;
 use aws_sdk_s3::{
     Client, config::Credentials, operation::put_object::builders::PutObjectFluentBuilder,
     primitives::ByteStream,
 };
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 
 mod error;
 
 pub use error::S3Error;
-use tokio::sync::RwLock;
 
 pub type S3Result<T> = std::result::Result<T, S3Error>;
 
@@ -21,9 +17,9 @@ pub type S3Result<T> = std::result::Result<T, S3Error>;
 pub struct S3Storage {
     c: Client,
     bucket_name: Arc<String>,
-
-    index: Arc<RwLock<Vec<PublishedCrate>>>,
 }
+
+static CRATES_BUCKET_DIR: &str = "crates";
 
 impl S3Storage {
     pub async fn from_env() -> Self {
@@ -49,11 +45,7 @@ impl S3Storage {
 
         let c = Client::new(&config);
 
-        Self {
-            c,
-            bucket_name,
-            index: Default::default(),
-        }
+        Self { c, bucket_name }
     }
 
     fn put(&self, key: impl Into<String>) -> PutObjectFluentBuilder {
@@ -63,33 +55,93 @@ impl S3Storage {
             .key(key)
     }
 
-    pub async fn load_latest_index(&self) -> S3Result<()> {
-        let mut write_lock = self.index.write().await;
-        let index = self.get_index().await.optional()?;
+    pub async fn load_index(&self) -> S3Result<crate::Index> {
+        let mut objects_paginator = self
+            .c
+            .list_objects_v2()
+            .bucket(self.bucket_name.as_str())
+            .into_paginator()
+            .page_size(50)
+            .send();
 
-        *write_lock = index.unwrap_or_default();
+        let mut index = crate::Index::default();
 
-        Ok(())
+        while let Some(page) = objects_paginator.next().await.transpose()? {
+            for object in page.contents.into_iter().flatten() {
+                let Some(key) = object.key.as_deref() else {
+                    continue;
+                };
+
+                let mut split = key.split('/');
+
+                if Some(CRATES_BUCKET_DIR) != split.next() {
+                    continue;
+                }
+
+                let crate_name = split
+                    .next()
+                    .ok_or_else(|| S3Error::key_split(key, "finding crate name"))?;
+
+                let crate_version = split
+                    .next()
+                    .ok_or_else(|| S3Error::key_split(key, "finding crate version"))?;
+
+                let filename = split
+                    .next()
+                    .ok_or_else(|| S3Error::key_split(key, "finding filename"))?;
+
+                // Only add entyr once per crate
+                if !filename.ends_with("json") {
+                    continue;
+                }
+
+                let meta_key = format!(
+                    "{CRATES_BUCKET_DIR}/{crate_name}/{crate_version}/{crate_name}-{crate_version}.json"
+                );
+
+                //let crate_key = format!(
+                //    "{CRATES_BUCKET_DIR}/{crate_name}/{crate_version}/{crate_name}-{crate_version}.crate"
+                //);
+
+                let fetched_meta = self
+                    .c
+                    .get_object()
+                    .bucket(self.bucket_name.as_str())
+                    .key(meta_key)
+                    .send()
+                    .await?;
+
+                let bs = fetched_meta.body.collect().await.expect("collecting body");
+                let crate_meta = serde_json::from_slice::<crate::api::CrateMeta>(&bs.into_bytes())
+                    .expect("parsing meta file");
+
+                println!("adding {} {}", crate_meta.name, crate_meta.vers);
+                index.add_crate_meta(crate_meta)
+            }
+        }
+
+        Ok(index)
     }
 
-    pub async fn get_index(&self) -> S3Result<Vec<PublishedCrate>> {
-        let mut res = self
+    pub async fn list_objects(&self) -> S3Result<()> {
+        let res = self
             .c
-            .get_object()
+            .list_objects_v2()
             .bucket(self.bucket_name.as_str())
-            .key("index.json")
             .send()
             .await?;
 
-        let mut buf = BytesMut::new();
+        if let Some(contents) = &res.contents {
+            for obj in contents {
+                let Some(key) = obj.key.as_deref() else {
+                    continue;
+                };
 
-        while let Ok(bs) = res.body.next().await.expect("getting bs") {
-            buf.extend(bs);
+                println!("Object: {key}")
+            }
         }
 
-        let res = serde_json::from_slice(&buf).expect("deser");
-
-        Ok(res)
+        Ok(())
     }
 
     pub async fn put_text_object(&self, key: String, content: String) -> S3Result<()> {
@@ -102,8 +154,21 @@ impl S3Storage {
     }
 
     pub async fn store_crate(&self, meta: &api::CrateMeta, data: Bytes) -> S3Result<()> {
-        let key = format!("crates/{}/{}", meta.name, meta.vers);
-        self.put(key).body(ByteStream::from(data)).send().await?;
+        let base = format!("crates/{}/{}", meta.name, meta.vers);
+        let crate_key = format!("{}/{}-{}.crate", base, meta.name, meta.vers);
+        let meta_key = format!("{}/{}-{}.json", base, meta.name, meta.vers);
+
+        let json_vec = serde_json::to_vec(&meta).expect("serializing crate meta");
+
+        self.put(crate_key)
+            .body(ByteStream::from(data))
+            .send()
+            .await?;
+
+        self.put(meta_key)
+            .body(ByteStream::from(json_vec))
+            .send()
+            .await?;
 
         Ok(())
     }

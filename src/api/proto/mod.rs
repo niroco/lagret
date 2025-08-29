@@ -1,9 +1,13 @@
 use std::collections::HashMap;
 
+use semver::{Version, VersionReq};
+
+pub type Features = HashMap<String, Vec<String>>;
+
 #[derive(Debug, serde::Serialize)]
 pub struct CrateListItem {
     pub name: String,
-    pub max_version: String,
+    pub max_version: Version,
     pub description: String,
 }
 
@@ -30,18 +34,18 @@ pub struct PublishWarnings {
     pub other: Vec<String>,
 }
 
-#[derive(Clone, Default, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PublishedCrate {
     pub name: String,
-    pub vers: String,
+    pub vers: Version,
     pub deps: Vec<CrateDep>,
     pub cksum: String,
-    pub features: HashMap<String, Vec<String>>,
+    pub features: Features,
     pub yanked: bool,
     pub links: Option<String>,
     pub v: u8,
-    pub features2: HashMap<String, Vec<String>>,
-    pub rust_version: Option<String>,
+    pub features2: Features,
+    pub rust_version: Option<Version>,
 }
 
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
@@ -55,7 +59,7 @@ pub enum CrateDepKind {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct CrateDep {
     pub name: String,
-    pub version_req: String,
+    pub version_req: semver::VersionReq,
     pub features: String,
     pub optional: bool,
     pub default_features: bool,
@@ -65,12 +69,12 @@ pub struct CrateDep {
     pub explicit_name_in_toml: Option<String>,
 }
 
-#[derive(Default, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct CrateMeta {
     pub name: String,
-    pub vers: String,
+    pub vers: Version,
     pub deps: Vec<CrateDep>,
-    pub features: HashMap<String, Vec<String>>,
+    pub features: Features,
     pub authors: Vec<String>,
     pub description: Option<String>,
     pub documentation: Option<String>,
@@ -83,7 +87,7 @@ pub struct CrateMeta {
     pub repository: Option<String>,
     pub badges: HashMap<String, HashMap<String, String>>,
     pub links: Option<String>,
-    pub rust_version: Option<String>,
+    pub rust_version: Option<Version>,
 }
 
 #[cfg(test)]

@@ -1,43 +1,80 @@
+use std::sync::Arc;
+
 use axum::{
     Extension, Json, Router, extract,
     http::{HeaderMap, request::Parts},
     routing,
 };
 use bytes::{Buf, Bytes};
+use clap::{Parser, Subcommand};
+use tokio::sync::RwLock;
 
 mod api;
 mod error;
+mod index;
+mod nd_json;
 mod s3;
 mod store;
 
-use error::Error;
-use store::Store;
+use {error::Error, index::Index, store::Store};
 
-use crate::{error::Optional, s3::S3Storage};
+use crate::{api::PublishedCrate, s3::S3Storage};
 
 type Result<T> = std::result::Result<T, Error>;
+
+#[derive(Debug, Parser)]
+struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum Command {
+    Run,
+    PutKey { key: String, value: String },
+
+    ListObjects,
+    LoadIndex,
+}
+
+#[derive(Clone)]
+pub struct IndexState(Arc<RwLock<Index>>);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let s3_storage = S3Storage::from_env().await;
 
-    s3_storage.load_latest_index().await?;
+    let args = Args::parse();
 
-    if let Some((key, content)) = std::env::args().nth(1).zip(std::env::args().nth(2)) {
-        println!("putting {key} => {content}");
+    match args.command.unwrap_or(Command::Run) {
+        Command::Run => (),
 
-        s3_storage.put_text_object(key, content).await?;
+        Command::PutKey { key, value } => {
+            println!("putting {key} => {value}");
+            s3_storage.put_text_object(key, value).await?;
+            return Ok(());
+        }
 
-        return Ok(());
+        Command::ListObjects => {
+            s3_storage.list_objects().await?;
+            return Ok(());
+        }
+
+        Command::LoadIndex => {
+            s3_storage.load_index().await?;
+            return Ok(());
+        }
     }
+
+    let index = s3_storage.load_index().await?;
 
     // build our application with a single route
     let app = Router::new()
-        .route("/config.json", routing::get(config))
-        .route("/{s1}/{s2}/{name}", routing::get(crates_get))
-        .route("/api/v1/crates/new", routing::put(crates_publish))
-        .route("/api/v1/crates", routing::get(crates_search))
-        .layer(Extension(Store::default()))
+        .route("/config.json", routing::get(get_config))
+        .route("/{s1}/{s2}/{name}", routing::get(get_crate))
+        .route("/api/v1/crates/new", routing::put(publish_crate))
+        .route("/api/v1/crates", routing::get(search_crates))
+        .layer(Extension(IndexState(Arc::new(RwLock::new(index)))))
         .layer(Extension(s3_storage))
         .fallback(fallback);
 
@@ -50,24 +87,49 @@ async fn main() -> anyhow::Result<()> {
 
 #[derive(serde::Deserialize, Debug)]
 struct GetCrate {
+    #[allow(dead_code)]
     pub s1: String,
+
+    #[allow(dead_code)]
     pub s2: String,
     pub name: String,
 }
 
-async fn crates_get(
+async fn get_crate(
     extract::Path(args): extract::Path<GetCrate>,
-    extract::Extension(store): extract::Extension<Store>,
-) -> Result<Json<api::PublishedCrate>> {
+    extract::Extension(IndexState(mtx)): extract::Extension<IndexState>,
+) -> Result<(HeaderMap, Bytes)> {
     println!("Got Crates get: {args:#?}",);
 
-    let res = store.get_crate(&args.name).await?;
+    let read_index = mtx.read().await;
+
+    let Some(versions_iter) = read_index.get_crate(&args.name) else {
+        return Err(Error::NotFound);
+    };
+
+    let versions_vec = versions_iter
+        .into_iter()
+        .map(|cm| PublishedCrate {
+            name: cm.name.into(),
+            vers: cm.vers,
+            deps: cm.deps,
+            cksum: cm.
+            features: todo!(),
+            yanked: todo!(),
+            links: todo!(),
+            v: todo!(),
+            features2: todo!(),
+            rust_version: todo!(),
+        })
+        .collect::<Vec<_>>();
+
     Ok(Json(res))
 }
 
-async fn crates_publish(
+async fn publish_crate(
     headers: HeaderMap,
     extract::Extension(store): extract::Extension<S3Storage>,
+    extract::Extension(IndexState(mtx)): extract::Extension<IndexState>,
     mut bs: Bytes,
 ) -> Result<Json<api::PublishResult>> {
     println!("Publish: {headers:#?}");
@@ -105,6 +167,10 @@ async fn crates_publish(
 
     store.store_crate(&meta, data).await?;
 
+    let mut index_write = mtx.write().await;
+
+    index_write.add_crate_meta(meta);
+
     Ok(Json(api::PublishResult::default()))
 }
 
@@ -115,7 +181,7 @@ struct SearchArgs {
     per_page: usize,
 }
 
-async fn crates_search(
+async fn search_crates(
     extract::Query(args): extract::Query<SearchArgs>,
 ) -> Json<api::SearchResult> {
     println!("got search requests: {args:#?}");
@@ -136,7 +202,7 @@ struct Config {
     api: String,
 }
 
-async fn config(parts: Parts) -> Json<Config> {
+async fn get_config(parts: Parts) -> Json<Config> {
     println!("got request: {parts:#?}");
 
     Json(Config {
@@ -146,7 +212,7 @@ async fn config(parts: Parts) -> Json<Config> {
 }
 
 async fn fallback(parts: Parts) -> &'static str {
-    println!("fallback: {parts:#?}");
+    eprintln!("fallback: {parts:#?}");
 
     "hello"
 }
