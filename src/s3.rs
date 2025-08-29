@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use crate::api;
+use crate::{
+    api::{self, CrateMeta},
+    index::IndexEntry,
+};
 use aws_sdk_s3::{
     Client, config::Credentials, operation::put_object::builders::PutObjectFluentBuilder,
     primitives::ByteStream,
@@ -17,6 +20,13 @@ pub type S3Result<T> = std::result::Result<T, S3Error>;
 pub struct S3Storage {
     c: Client,
     bucket_name: Arc<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct S3CrateMeta {
+    cksum: String,
+    meta: CrateMeta,
+    yanked: bool,
 }
 
 static CRATES_BUCKET_DIR: &str = "crates";
@@ -112,11 +122,19 @@ impl S3Storage {
                     .await?;
 
                 let bs = fetched_meta.body.collect().await.expect("collecting body");
-                let crate_meta = serde_json::from_slice::<crate::api::CrateMeta>(&bs.into_bytes())
+                let S3CrateMeta {
+                    cksum,
+                    meta,
+                    yanked,
+                } = serde_json::from_slice::<S3CrateMeta>(&bs.into_bytes())
                     .expect("parsing meta file");
 
-                println!("adding {} {}", crate_meta.name, crate_meta.vers);
-                index.add_crate_meta(crate_meta)
+                println!("adding {} {}", meta.name, meta.vers);
+                index.add_crate_meta(IndexEntry {
+                    cksum,
+                    meta,
+                    yanked,
+                })
             }
         }
 
@@ -153,12 +171,20 @@ impl S3Storage {
         Ok(())
     }
 
-    pub async fn store_crate(&self, meta: &api::CrateMeta, data: Bytes) -> S3Result<()> {
+    pub async fn store_crate(&self, meta: api::CrateMeta, data: Bytes) -> S3Result<IndexEntry> {
         let base = format!("crates/{}/{}", meta.name, meta.vers);
         let crate_key = format!("{}/{}-{}.crate", base, meta.name, meta.vers);
         let meta_key = format!("{}/{}-{}.json", base, meta.name, meta.vers);
 
-        let json_vec = serde_json::to_vec(&meta).expect("serializing crate meta");
+        let cksum = sha256::digest(data.as_ref());
+
+        let s3_entry = S3CrateMeta {
+            cksum,
+            meta,
+            yanked: false,
+        };
+
+        let json_vec = serde_json::to_vec(&s3_entry).expect("serializing crate meta");
 
         self.put(crate_key)
             .body(ByteStream::from(data))
@@ -170,6 +196,10 @@ impl S3Storage {
             .send()
             .await?;
 
-        Ok(())
+        Ok(IndexEntry {
+            cksum: s3_entry.cksum,
+            meta: s3_entry.meta,
+            yanked: s3_entry.yanked,
+        })
     }
 }

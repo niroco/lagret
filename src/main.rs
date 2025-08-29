@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::{
     Extension, Json, Router, extract,
-    http::{HeaderMap, request::Parts},
+    http::{self, HeaderMap, request::Parts},
     routing,
 };
 use bytes::{Buf, Bytes};
@@ -14,9 +14,12 @@ mod error;
 mod index;
 mod nd_json;
 mod s3;
-mod store;
 
-use {error::Error, index::Index, store::Store};
+use {
+    error::Error,
+    index::{Index, IndexEntry},
+    nd_json::NdJson,
+};
 
 use crate::{api::PublishedCrate, s3::S3Storage};
 
@@ -98,7 +101,7 @@ struct GetCrate {
 async fn get_crate(
     extract::Path(args): extract::Path<GetCrate>,
     extract::Extension(IndexState(mtx)): extract::Extension<IndexState>,
-) -> Result<(HeaderMap, Bytes)> {
+) -> Result<(HeaderMap, NdJson<PublishedCrate>)> {
     println!("Got Crates get: {args:#?}",);
 
     let read_index = mtx.read().await;
@@ -109,21 +112,32 @@ async fn get_crate(
 
     let versions_vec = versions_iter
         .into_iter()
-        .map(|cm| PublishedCrate {
-            name: cm.name.into(),
-            vers: cm.vers,
-            deps: cm.deps,
-            cksum: cm.
-            features: todo!(),
-            yanked: todo!(),
-            links: todo!(),
-            v: todo!(),
-            features2: todo!(),
-            rust_version: todo!(),
-        })
+        .map(
+            |IndexEntry {
+                 cksum,
+                 meta,
+                 yanked,
+             }| PublishedCrate {
+                name: meta.name.clone(),
+                vers: meta.vers.clone(),
+                deps: meta.deps.clone(),
+                cksum: cksum.into(),
+                features: meta.features.clone(),
+                yanked: *yanked,
+                links: meta.links.clone(),
+                v: 2,
+                features2: meta.features.clone(),
+                rust_version: meta.rust_version.clone(),
+            },
+        )
         .collect::<Vec<_>>();
 
-    Ok(Json(res))
+    let headers = HeaderMap::from_iter([(
+        http::HeaderName::from_static("content-type"),
+        http::HeaderValue::from_static("applicant/json"),
+    )]);
+
+    Ok((headers, NdJson(versions_vec)))
 }
 
 async fn publish_crate(
@@ -165,11 +179,11 @@ async fn publish_crate(
         "the total size of the data"
     );
 
-    store.store_crate(&meta, data).await?;
+    let index_entry = store.store_crate(meta, data).await?;
 
     let mut index_write = mtx.write().await;
 
-    index_write.add_crate_meta(meta);
+    index_write.add_crate_meta(index_entry);
 
     Ok(Json(api::PublishResult::default()))
 }
@@ -189,7 +203,7 @@ async fn search_crates(
     Json(api::SearchResult {
         crates: vec![api::CrateListItem {
             name: "hello".into(),
-            max_version: "1.0.0".into(),
+            max_version: "1.0.0".parse().unwrap(),
             description: "a dummy crate just here to see if we can reply to Cargo".into(),
         }],
         meta: api::SearchMeta { total: 10 },

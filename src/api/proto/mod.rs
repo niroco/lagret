@@ -59,7 +59,7 @@ pub enum CrateDepKind {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct CrateDep {
     pub name: String,
-    pub version_req: semver::VersionReq,
+    pub version_req: VersionReq,
     pub features: String,
     pub optional: bool,
     pub default_features: bool,

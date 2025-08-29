@@ -3,7 +3,7 @@ use bytes::Bytes;
 
 use std::io::{self, Write};
 
-pub struct NdJson<T>(Vec<T>);
+pub struct NdJson<T>(pub Vec<T>);
 
 impl<T> From<NdJson<T>> for Bytes
 where
@@ -14,7 +14,9 @@ where
 
         for e in nd_json.0 {
             serde_json::to_writer(&mut buf, &e).expect("serializing NdJson");
-            buf.write(&[b'\n']).expect("writing line feed");
+            let n = buf.write(b"\n").expect("writing line feed");
+
+            assert_eq!(1, n);
         }
 
         Bytes::from(buf.into_inner())
