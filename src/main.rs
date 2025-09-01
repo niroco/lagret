@@ -57,6 +57,8 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    let listen_addr = std::env::var("LAGRET_LISTEN_ADDR").expect("env var LAGRET_LISTEN_ADDR");
+
     let index = s3_storage.load_index().await?;
 
     // build our application with a single route
@@ -77,7 +79,7 @@ async fn main() -> anyhow::Result<()> {
         .fallback(fallback);
 
     // run our app with hyper, listening globally on port 3000
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
+    let listener = tokio::net::TcpListener::bind(listen_addr).await?;
     axum::serve(listener, app).await?;
 
     Ok(())
