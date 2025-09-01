@@ -38,6 +38,7 @@ impl IntoResponse for Error {
     }
 }
 
+#[allow(dead_code)]
 pub trait Optional<T, E>
 where
     Self: Sized,

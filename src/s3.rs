@@ -189,15 +189,6 @@ impl S3Storage {
         Ok(())
     }
 
-    pub async fn put_text_object(&self, key: String, content: String) -> S3Result<()> {
-        self.put(key)
-            .body(ByteStream::from(content.into_bytes()))
-            .send()
-            .await?;
-
-        Ok(())
-    }
-
     pub async fn store_crate(&self, meta: api::CrateMeta, data: Bytes) -> S3Result<IndexEntry> {
         let crate_name = &meta.name;
         let crate_version = &meta.vers;

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use axum::{Extension, Json, Router, http::request::Parts, routing};
+use axum::{Extension, Router, http::request::Parts, routing};
 use clap::{Parser, Subcommand};
 use tokio::sync::RwLock;
 
@@ -30,8 +30,6 @@ struct Args {
 #[derive(Debug, Clone, Subcommand)]
 enum Command {
     Run,
-    PutKey { key: String, value: String },
-
     ListObjects,
     LoadIndex,
 }
@@ -47,12 +45,6 @@ async fn main() -> anyhow::Result<()> {
 
     match args.command.unwrap_or(Command::Run) {
         Command::Run => (),
-
-        Command::PutKey { key, value } => {
-            println!("putting {key} => {value}");
-            s3_storage.put_text_object(key, value).await?;
-            return Ok(());
-        }
 
         Command::ListObjects => {
             s3_storage.list_objects().await?;
